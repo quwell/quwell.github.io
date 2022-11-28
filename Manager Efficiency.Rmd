@@ -1,0 +1,380 @@
+---
+title: 'Manager Efficiency: Worth a Closer Look?'
+author: "Alexandra Kelly"
+date: '2022-11-23'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+library(ggplot2)
+library(tidyverse)
+library(egg)
+library(purrr)
+library(jsonlite)
+library(kableExtra)
+```
+
+# Termovision
+
+![](images/terminator.jpeg)
+
+
+Let's imagine you're a cyborg assassin sent back in time from 2029 by the Queef Wellington Society because in 2022, whoever won the chip caused apocalyptic damage and the world is now in shambles. But because of a failure by the league reporter that year, no one actually knows who won. What a fuckup that guy must have been. But an extremely intrepid manager in the league took it upon themselves to at some point make plots of various statistics from the first 11 weeks of the year. What a hero.
+
+Luckily, you have advanced cyborg vision that can apply extremely oversimplified versions of machine learning concepts to plots! You only have enough time and ammunition to kill the *four* top ranked members of the league as of week 11...how will you determine your targets?
+
+Let's try looking at efficiency as reported in the Sleeper app for each manager first (I'm the green dot way at the bottom there):
+
+```{r simpleEfficiency}
+# read in data
+simple.dat <- read.csv('data/simple_efficiency_data.csv', header = T, stringsAsFactors = T)
+# plot
+ggplot(simple.dat, aes(x = Manager, y = Simple.Efficiency, color = Manager, label = Manager)) +
+  geom_point(size = 8) +
+  geom_text(vjust = 2.5) +
+  ylab("Efficiency") +
+  theme(panel.background = element_rect(fill = 'white'),
+        panel.grid = element_blank(),
+        axis.line = element_line(color = 'lightgray'),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text = element_text(size = rel(1.1)),
+        legend.position = 'none')
+```
+
+Notice that there are multiple lines you could draw that would separate groups of four players: 
+
+```{r simpleEfficiency_classified}
+ggplot(simple.dat, aes(x = Manager, y = Simple.Efficiency, color = Manager, label = Manager)) +
+  geom_point(size = 8) +
+  geom_text(vjust = 2.5) +
+  geom_abline(intercept = 87, slope = .5, color = 'red', size = 1.5, linetype = 'dotted') +
+  geom_abline(intercept = 94, slope = -1.5, color = 'blue', size = 1.5, linetype = 'dotted') +
+  geom_vline(xintercept = 4.5, color = 'green', size = 1.5, linetype = 'dotted') +
+  geom_vline(xintercept = 6.3, color = 'orange', size = 1.5, linetype = 'dotted') +
+  ylab("Simple Efficiency") +
+  theme(panel.background = element_rect(fill = 'white'),
+        panel.grid = element_blank(),
+        axis.line = element_line(color = 'lightgray'),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text = element_text(size = rel(1.1)),
+        legend.position = 'none')
+```
+
+Now with the knowledge of current league members, we happen to know that none of these groups reflects the league standings as of week 11. We haven't looked at every possible method of separating groups of players here, but spoiler: it would be relatively complex for even a computer to create a line that picked out JerNu, Bbopski, kellieally, and Scythe911.
+
+So we've seen efficiency isn't a great way to determine likelihood of having a good record in this league. Let's think about why. 
+
+# Simple Efficiency as Reported by Sleeper
+
+As of week 11, Sleeper efficiency standings look like this:
+
+```{r simpleEfficiency_ranked}
+# plot
+simple.dat %>%
+  mutate(Manager = fct_reorder(Manager, Simple.Efficiency)) %>%
+  ggplot(aes(x= Manager, y=Simple.Efficiency), color = Manager) +
+  geom_bar(stat = 'identity') +
+  coord_flip() +
+  ylab("Simple Efficiency")
+```
+
+We can see a little more easily the relationship between efficiency and league standings:
+
+```{r efficiency_leagueStandings}
+# plot
+ggplot(simple.dat, aes(x = Rank, y = Simple.Efficiency, color = Manager, label = Manager)) +
+  geom_point(size = 8) +
+  geom_text(vjust = 2.5) +
+  scale_x_continuous(breaks = seq(1, 10, 1)) +
+  ylab("Efficiency") +
+  xlab("Current Standings") +
+  theme(panel.background = element_rect(fill = 'white'),
+        panel.grid = element_blank(),
+        axis.line = element_line(color = 'lightgray'),
+        axis.title.x = element_text(face = 'bold'),
+        axis.title.y = element_text(face = 'bold'),
+        axis.text = element_text(size = rel(1.1)),
+        legend.position = 'none')
+```
+
+If using efficiency as a proxy for manager quality, we would expect to see simple efficiency decrease with rank, which we do not. It actually has roughly the opposite pattern; managers with a worse record tend to have higher efficiency (although note Bbopski is an outlier here!)
+
+The metric that is reported by Sleeper, which we'll call simple efficiency, is a proportion reflecting how many points for a team has versus their maximum potential points:  
+
+$$
+\frac{Points For}{Max Points}
+$$
+
+We typically convert this to a percentage when discussing manager efficiency. Let's say I had scored 1344.86 points across my matchups in the first 11 weeks of the season, but my max points was 1599.90:
+
+$$
+\frac{1344.86}{1599.90}\ = .84\times100 = 84\%
+$$
+
+Not to belabor simple math, but note that because of how this metric is computed, efficiency can be *lowered* by either scoring fewer points in your matchups, *or* having higher maximum points; similarly, it can be *raised* by scoring more points, *or* having lower max points.
+
+We know simple efficiency will be associated with points for and maximum points, since that is what it's computed from. But as a sanity check let's visualize those relationships:
+
+```{r maxPoints_pointsFor}
+ggplot(simple.dat, aes(x = Max.Points, y = Simple.Efficiency, color = Manager, label = Manager)) +
+  geom_point(size = 8) +
+  geom_text(vjust = 2.5) +
+  ylab("Simple Efficiency") +
+  xlab("Max Points") +
+  theme(panel.background = element_rect(fill = 'white'),
+        panel.grid = element_blank(),
+        axis.line = element_line(color = 'lightgray'),
+        axis.title.x = element_text(face = 'bold'),
+        axis.title.y = element_text(face = 'bold'),
+        axis.text = element_text(size = rel(1.1)),
+        legend.position = 'none')
+ggplot(simple.dat, aes(x = Points.For, y = Simple.Efficiency, color = Manager, label = Manager)) +
+  geom_point(size = 8) +
+  geom_text(vjust = 2.5) +
+  ylab("Simple Efficiency") +
+  xlab("Points For") +
+  theme(panel.background = element_rect(fill = 'white'),
+        panel.grid = element_blank(),
+        axis.line = element_line(color = 'lightgray'),
+        axis.title.x = element_text(face = 'bold'),
+        axis.title.y = element_text(face = 'bold'),
+        axis.text = element_text(size = rel(1.1)),
+        legend.position = 'none')
+
+```
+
+
+Yep, we're not crazy - *as max points go up, efficiency decreases*. And *as points for go up, efficiency increases*. (Again, Bbopski is an outlier here! Pretty robust against these effects.)
+
+Also, to return briefly to our earlier example...
+
+![](images/terminator.jpeg)
+
+Note that when you plot either max points or points for while essentially controlling for simple efficiency, you could very easily separate out what we know are the top 4 league members:
+
+```{r maxPoints_pointsFor_classified}
+mp <- ggplot(simple.dat, aes(x = Max.Points, y = Simple.Efficiency, color = Manager, label = Manager)) +
+  geom_point(size = 8) +
+  geom_text(vjust = 2.5) +
+  geom_vline(xintercept = 1400, color = 'red', size = 1.5, linetype = 'dotted') +  
+  ylab("Simple Efficiency") +
+  xlab("Max Points") +
+  theme(panel.background = element_rect(fill = 'white'),
+        panel.grid = element_blank(),
+        axis.line = element_line(color = 'lightgray'),
+        axis.title.x = element_text(face = 'bold'),
+        axis.title.y = element_text(face = 'bold'),
+        axis.text = element_text(size = rel(1.1)),
+        legend.position = 'none')
+
+pf <- ggplot(simple.dat, aes(x = Points.For, y = Simple.Efficiency, color = Manager, label = Manager)) +
+  geom_point(size = 8) +
+  geom_text(vjust = 2.5) +
+  geom_abline(intercept = 32, slope = .045, size = 1.5, color = 'red', linetype = 'dotted') +
+  ylab("Simple Efficiency") +
+  xlab("Points For") +
+  theme(panel.background = element_rect(fill = 'white'),
+        panel.grid = element_blank(),
+        axis.line = element_line(color = 'lightgray'),
+        axis.title.x = element_text(face = 'bold'),
+        axis.title.y = element_text(face = 'bold'),
+        axis.text = element_text(size = rel(1.1)),
+        legend.position = 'none')
+
+ggarrange(mp, pf,
+          nrow = 2,
+          ncol = 1)
+```
+
+Targets acquired.
+
+So we definitely have more *efficient* metrics than simple efficiency if we want to separate the wheat from the chaff.
+
+# An Alternative Metric: 'Weekly' Efficiency
+
+It seems (based on league communication) that what we might really want to know when it comes to manager efficiency is how many matchups did you lose because of your lineup choices? Simple efficiency is not going to tell us that. A more accurate reflection of efficiency would then be something that takes into account the difference between your current record and what your record would be with maximum efficiency on a week-to-week basis.
+
+Luckily we have available to us the max points by matchup for each player so we know if someone could have won, but did not. So we can take current record and compare it to maximally efficient record.
+
+Here's everyone's current record:
+
+
+```{r current_record}
+# read in data
+# data are acquired by week as json files, all stored in the working directory; list all files to be read and then bind them into a large matrix
+dat_folder <- "data"
+to_read <- list.files("data",".json")
+all_weeks <- do.call(rbind, Map('cbind',
+                  lapply(to_read, function(x) {
+                  raw_dat <- read_json(paste(dat_folder, x, sep = '/'))
+                                  single_week <- as.data.frame(do.call(rbind, raw_dat)) %>%
+                                  select(-custom_points) %>%
+                                  pivot_longer(cols = everything()) %>% #because columns are of unequal length (each roster will have only 9 starters, but more players), need to pivot longer and then back to wider to fill in lengths to max number of players on any given roster with NAs
+                                  mutate(value = lapply(value, 'length<-', max(lengths(value)))) %>%
+                                  pivot_wider(names_from = name, values_from = value) %>%
+                                  unnest() %>%
+                                  unnest_longer(c(starters_points, starters, roster_id, points, players_points, players, matchup_id))
+}), filename = to_read)) %>%
+  relocate(filename, .before = 'starters_points') %>%
+  mutate(filename = str_sub(filename, 5, 6)) %>%  #grab week number from filename
+  rename(week = filename) %>%
+  fill(roster_id,
+       matchup_id)
+
+# roster ids correspond to managers; I ended up needing to match these manually because I couldn't find that info in the sleeper API
+all_weeks <- all_weeks %>%
+  mutate(roster_id = case_when(roster_id == 1 ~ 'bbposki',
+                               roster_id == 2 ~ 'kellieally',
+                               roster_id == 3 ~ 'vekin8791',
+                               roster_id == 4 ~ 'mbf1808',
+                               roster_id == 5 ~ 'robmitch28',
+                               roster_id == 6 ~ 'JerNu',
+                               roster_id == 7 ~ 'JMDickson',
+                               roster_id == 8 ~ 'ettubry',
+                               roster_id == 9 ~ 'Scythe911',
+                               TRUE ~ 'TheChamp5796'))
+
+
+  # fill in player ids and positional information, which will be needed to determine max points
+
+# call to update player info if necessary; otherwise version from 11/27 is stored in working directory
+#url_json <- "https://api.sleeper.app/v1/players/nfl"
+
+#raw_players_json <- url_json %>% 
+  #httr::GET() %>% 
+  #httr::content()
+
+raw_players_json <- read_json('data/Player Data/raw_players_json.json')
+
+
+# if call is re-run, may need to update these indices:
+player_names <- tibble(map(raw_players_json, pluck, 30)) 
+player_ids <- tibble(map(raw_players_json, pluck, 45))
+player_positions <- tibble(map(raw_players_json, pluck, 8))
+
+# manually set colnames after plucking data from json
+col_names <- c('name', 'id', 'position')
+
+player_info <- cbind(player_names, player_ids, player_positions) %>%
+  setNames(col_names) %>% 
+  unnest(name) %>%
+  unnest(id) %>%
+  unnest(position) %>%
+  unnest(position)
+
+# prep all_weeks df for join
+all_weeks <- all_weeks %>%
+  select(-players_points_id) %>%
+  rename(id = players)
+
+# add player_info to all_weeks
+all_weeks <- left_join(all_weeks, player_info, by = 'id')
+
+# add DEF position to position column
+all_weeks <- all_weeks %>%
+  mutate(position = case_when(is.na(position) ~ 'DEF',
+                              TRUE ~ position))
+
+# computing win-loss record
+current_record <- all_weeks %>%
+  rename(manager = roster_id) %>%
+  group_by(manager, week, matchup_id) %>%
+  summarise(points = sum(points, na.rm = T)) %>%
+  arrange(week, matchup_id) %>% 
+  group_by(week, matchup_id) %>%
+  mutate(win = case_when(points == max(points) ~ 1,
+                         TRUE ~ 0)) %>%
+  ungroup() %>%
+  group_by(manager) %>%
+  summarise(wins = sum(win),
+            losses = 11 - wins) %>% # change this value based on number of weeks
+  pivot_longer(!manager, names_to = 'outcome', values_to = 'count')
+
+
+current_record %>%
+  mutate(manager = fct_reorder2(manager, outcome, count)) %>%
+  ggplot(aes(x = manager, y = count, fill = outcome)) +
+  geom_bar(position = 'dodge', stat = 'identity') +
+  scale_y_continuous('Count', breaks = seq(0, 11, 1)) +
+  xlab('Manager') +
+  theme(panel.background = element_rect(fill = 'white'),
+        panel.grid = element_blank(),
+        axis.line = element_line(color = 'lightgray'),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.text = element_text(size = rel(1.1)))
+```
+
+And here's what everyone's record *could* look like if they had set lineups to achieve their max points each week (holding their opponent's performance constant):
+
+```{r}
+# computing max points for each player each week
+# work this out based on all_weeks at some point
+#max_points <- all_weeks %>%
+  #rename(manager = roster_id) %>%
+  #select(week, manager, matchup_id, players_points, name, position) %>%
+  #group_by(manager, week, matchup_id, position) #%>%
+  #slice(which.max(players_points[position == 'QB'])
+
+
+max_points <- read.csv('data/max_points.csv', header = T, stringsAsFactors = F)
+
+possible_record <- max_points %>%
+  group_by(manager) %>%
+  summarise(wins = sum(win),
+            losses = 11 - wins,
+            possible_wins = sum(could_win),
+            possible_losses = 11 - possible_wins) %>% # change this value based on number of weeks
+  pivot_longer(!manager, names_to = 'outcome', values_to = 'count')
+
+
+possible_record %>%
+  filter(!outcome == 'wins',
+         !outcome == 'losses') %>%
+  mutate(manager = fct_reorder2(manager, outcome, count)) %>%
+  ggplot(aes(x = manager, y = count, fill = outcome)) +
+  geom_bar(position = 'dodge', stat = 'identity') +
+  scale_y_continuous('Count', breaks = seq(0, 11, 1)) +
+  xlab('Manager') +
+  theme(panel.background = element_rect(fill = 'white'),
+        panel.grid = element_blank(),
+        axis.line = element_line(color = 'lightgray'),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.text = element_text(size = rel(1.1)))
+
+```
+
+To put it a different way for those who prefer a different visual, here's the number of weeks each manager *could have* won with better lineup choices that week:
+
+```{r}
+possible_record %>%
+  group_by(manager) %>%
+  summarise(difference = sum(count[outcome == 'possible_wins']) - sum(count[outcome == 'wins'])) %>%
+  ungroup() %>%
+  arrange(desc(difference)) %>%
+  kbl() %>%
+  kable_material()
+```
+
+That's right everyone - Scythe911, who "would rather just lose to a better team", has lost as many times on a weekly basis when he could have won with better lineup choices as me, the least efficient team in the league. It's also the most times that has happened to any managers in the league. Womp womp.
+
+Now, obviously, there are a lot of choices and things that go into any given matchup. This isn't the decisive factor in whether a manager wins or loses. We've all been burned at one time or another by injuries, coach's inexplicable decisions, or an opponent who just has a stellar week.
+
+But I think we can say that the efficiency reported by Sleeper is perhaps not as informative as one may have thought.
+
+# Future Directions
+
+Avenging this petty slight prompted me to gather this data, but now that we have some scripts that can pull and analyse Sleeper data, the world is Queef Wellington's oyster! Anyone else have a petty grudge that they want to settle? Let's try to do it! But keep in mind unlike our esteemed commish and Kevin, I don't get paid for my work on league business so let's try to keep it manageable.
+
+I've had some questions about what the data look like and what kind of information we can get. Basically, if Sleeper tracks it, we can pull it from the app and do whatever we want with it. This is a small sample of the matchup-specific data for each week that I ended up with (after heavily formatting the full output from the Sleeper API):
+
+```{r echo=TRUE}
+
+head(all_weeks, 40)
+
+```
+
+There's much more out there for us to grab!
