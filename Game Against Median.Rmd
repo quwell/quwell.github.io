@@ -1,0 +1,263 @@
+---
+title: 'How would game-against-the-median affect standings?'
+author: "Alexandra Kelly"
+date: '2022-11-29'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+library(ggplot2)
+library(tidyverse)
+library(egg)
+library(purrr)
+library(jsonlite)
+library(kableExtra)
+library(gganimate)
+```
+
+# Scoring Format
+
+There are advantages and disadvantages to any scoring system in fantasy, but it's always good to look at all of the options. 
+
+This year we're going with the traditional head-to-head format (with the addition of the two wildcard playoff spots based on total points for of course.) But we can take a look at what the standings would look like if we had incorporated the extra game each week against the league median.
+
+As a refresher, here's everyone's current record:
+
+```{r current_record}
+# read in data
+# data are acquired by week as json files, all stored in the working directory; list all files to be read and then bind them into a large matrix
+dat_folder <- "data"
+to_read <- list.files("data",".json")
+all_weeks <- do.call(rbind, Map('cbind',
+                  lapply(to_read, function(x) {
+                  raw_dat <- read_json(paste(dat_folder, x, sep = '/'))
+                                  single_week <- as.data.frame(do.call(rbind, raw_dat)) %>%
+                                  select(-custom_points) %>%
+                                  pivot_longer(cols = everything()) %>% #because columns are of unequal length (each roster will have only 9 starters, but more players), need to pivot longer and then back to wider to fill in lengths to max number of players on any given roster with NAs
+                                  mutate(value = lapply(value, 'length<-', max(lengths(value)))) %>%
+                                  pivot_wider(names_from = name, values_from = value) %>%
+                                  unnest() %>%
+                                  unnest_longer(c(starters_points, starters, roster_id, points, players_points, players, matchup_id))
+}), filename = to_read)) %>%
+  relocate(filename, .before = 'starters_points') %>%
+  mutate(filename = str_sub(filename, 5, 6)) %>%  #grab week number from filename
+  rename(week = filename) %>%
+  fill(roster_id,
+       matchup_id)
+
+# roster ids correspond to managers; I ended up needing to match these manually because I couldn't find that info in the sleeper API
+all_weeks <- all_weeks %>%
+  mutate(roster_id = case_when(roster_id == 1 ~ 'bbposki',
+                               roster_id == 2 ~ 'kellieally',
+                               roster_id == 3 ~ 'vekin8791',
+                               roster_id == 4 ~ 'mbf1808',
+                               roster_id == 5 ~ 'robmitch28',
+                               roster_id == 6 ~ 'JerNu',
+                               roster_id == 7 ~ 'JMDickson',
+                               roster_id == 8 ~ 'ettubry',
+                               roster_id == 9 ~ 'Scythe911',
+                               TRUE ~ 'TheChamp5796'))
+
+
+  # fill in player ids and positional information, which will be needed to determine max points
+
+# call to update player info if necessary; otherwise version from 11/27 is stored in working directory
+#url_json <- "https://api.sleeper.app/v1/players/nfl"
+
+#raw_players_json <- url_json %>% 
+  #httr::GET() %>% 
+  #httr::content()
+
+raw_players_json <- read_json('data/Player Data/raw_players_json.json')
+
+
+# if call is re-run, may need to update these indices:
+player_names <- tibble(map(raw_players_json, pluck, 30)) 
+player_ids <- tibble(map(raw_players_json, pluck, 45))
+player_positions <- tibble(map(raw_players_json, pluck, 8))
+
+# manually set colnames after plucking data from json
+col_names <- c('name', 'id', 'position')
+
+player_info <- cbind(player_names, player_ids, player_positions) %>%
+  setNames(col_names) %>% 
+  unnest(name) %>%
+  unnest(id) %>%
+  unnest(position) %>%
+  unnest(position)
+
+# prep all_weeks df for join
+all_weeks <- all_weeks %>%
+  select(-players_points_id) %>%
+  rename(id = players)
+
+# add player_info to all_weeks
+all_weeks <- left_join(all_weeks, player_info, by = 'id')
+
+# add DEF position to position column
+all_weeks <- all_weeks %>%
+  mutate(position = case_when(is.na(position) ~ 'DEF',
+                              TRUE ~ position))
+
+# computing win-loss record
+current_record <- all_weeks %>%
+  rename(manager = roster_id) %>%
+  group_by(manager, week, matchup_id) %>%
+  summarise(points = sum(points, na.rm = T)) %>%
+  arrange(week, matchup_id) %>% 
+  group_by(week, matchup_id) %>%
+  mutate(win = case_when(points == max(points) ~ 1,
+                         TRUE ~ 0)) %>%
+  ungroup() %>%
+  group_by(manager) %>%
+  summarise(wins = sum(win),
+            losses = 12 - wins) %>% # change this value based on number of weeks
+  pivot_longer(!manager, names_to = 'outcome', values_to = 'count')
+
+
+current_record %>%
+  mutate(manager = fct_reorder2(manager, outcome, count)) %>%
+  ggplot(aes(x = manager, y = count, fill = outcome)) +
+  geom_bar(position = 'dodge', stat = 'identity') +
+  scale_y_continuous('Count', breaks = seq(0, 10, 1)) +
+  xlab('Manager') +
+  theme(panel.background = element_rect(fill = 'white'),
+        panel.grid = element_blank(),
+        axis.line = element_line(color = 'lightgray'),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.text = element_text(size = rel(1.1)))
+
+
+current_record %>%
+  pivot_wider(names_from = outcome, values_from = count) %>%
+  ungroup() %>%
+  arrange(desc(wins)) %>%
+  kbl() %>%
+  kable_minimal()
+```
+
+
+
+Tight tight tight! in the middle there.
+
+# Game Against the Median
+
+Let's see how records and standings change with the extra game against the median.
+
+Just to clarify before continuing what's happening below, I'm computing the median of each week's points for (remember for a data set with an even number of data points, median is equal to the average of the middle two points; for our 10-team league, that means the 5th and 6th highest-scoring teams), comparing each manager's points for to the median, and awarding them a win if they are above it and a loss if they are below it.
+
+Sleeper's documentation specifies that in the rare case a manager scores exactly the median score, they will be awarded a tie, just in case anyone was worried about that.
+
+So all we need are the points scored by each manager each week:
+
+```{r preview_data}
+median_all_weeks <- all_weeks %>%
+  select(week, manager = roster_id, points) %>%
+  filter(!is.na(points))
+head(median_all_weeks,10)
+```
+Order them in descending order:
+
+```{r ordered_data}
+median_all_weeks <- all_weeks %>%
+  select(week, manager = roster_id, points) %>%
+  filter(!is.na(points)) %>%
+  group_by(week) %>%
+  arrange(desc(points), .by_group = T)
+head(median_all_weeks, 10)
+```
+Grab the middle two and average:
+
+$$
+\frac{116.47 + 110.06}{2} = 113.27
+$$
+
+Doing this for each week, we see that the medians hang around 111 as Bill informed us (average median being 111.74), but as expected there are general up and down weeks for the league:
+
+```{r median_computation}
+
+median_all_weeks <- median_all_weeks %>%
+  group_by(week) %>%
+  summarise(median = median(points))
+
+average_median <- median_all_weeks %>%
+  summarise(avg = mean(median))
+  
+ggplot(median_all_weeks, aes(x = week, y = median)) +
+  geom_histogram(stat = 'identity') +
+  scale_y_continuous(breaks = seq(0,150,10))
+  
+```
+
+Now we test each manager's score against the week's median and add to their record. I'll display the results separately from the head-to-head record first to avoid confusion:
+
+```{r median_record}
+
+median_record <- all_weeks %>%
+  select(week, manager = roster_id, points) %>% 
+  filter(!is.na(points)) %>%
+  left_join(median_all_weeks, by = 'week') %>%
+  mutate(median_win = case_when(points > median ~ 1,
+                                TRUE ~ 0)) %>%
+  ungroup() %>%
+  group_by(manager) %>%
+  summarise(median_wins = sum(median_win),
+            median_losses = 12 - median_wins) %>% # change this value based on number of weeks
+  pivot_longer(!manager, names_to = 'outcome', values_to = 'count') 
+
+median_record %>%
+  pivot_wider(names_from = outcome, values_from = count) %>%
+  ungroup() %>%
+  arrange(desc(median_wins)) %>%
+  kbl() %>%
+  kable_minimal()
+```
+
+We can already see some differences between this 'schedule' and our head-to-head matchups. Let's put it all together and see how everyone's record would change and what the standings would look like (the plot below is ordered by most total wins):
+
+```{r total_record}
+
+total_record <- full_join(current_record, median_record, by = c('manager', 'outcome', 'count')) %>%
+  group_by(manager) %>%
+  summarize(total_wins = sum(count[outcome == 'wins' | outcome == 
+                                     'median_wins']),
+            total_losses = 24 - total_wins)
+
+total_record %>%
+  pivot_longer(!manager, names_to = 'outcome', values_to = 'count') %>%
+  mutate(manager = fct_reorder2(manager, outcome, count)) %>%
+  ggplot(aes(x = manager, y = count, fill = outcome)) +
+  geom_bar(position = 'dodge', stat = 'identity') +
+  scale_y_continuous('Count', breaks = seq(0, 24, 2)) +
+  xlab('Manager') +
+  theme(panel.background = element_rect(fill = 'white'),
+        panel.grid = element_blank(),
+        axis.line = element_line(color = 'lightgray'),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.text = element_text(size = rel(1.1)))
+
+```
+
+My lord. It's a whole different ballgame...kind of. ettubry's still where he was, and robmitch28 and vekin8791 are still hanging at 6 and 7, but our top 4 shift around. We lose Scythe911 to mbf1808, and there's a shakeup in the ordering of the top 3 as well as a swap of JMDickson and TheChamp5796 between 8th and 9th. So as different as a ballgame can get when there's only about 10 pieces to move around and we already kind of deduced from max points and so on who might have benefitted from scheduling luck etc...
+
+But there you have it. Seems like there are only a few people who would benefit or lose standing from game against the median as of week 12. 
+
+And just a final summary:
+
+```{r all_records}
+
+full_join(current_record, median_record, by = c('manager', 'outcome', 'count')) %>%
+  pivot_wider(names_from = outcome, values_from = count) %>%
+  rename(Head_to_Head_Wins = wins,
+         Head_to_Head_Losses = losses,
+         Median_Wins = median_wins,
+         Median_Losses = median_losses) %>%
+  group_by(manager) %>%
+  mutate(Total_Record = paste(rowSums(across(ends_with('Wins'))),24-rowSums(across(ends_with('Wins'))), sep = '-')) %>%
+  arrange(desc(rowSums(across(ends_with('Wins'))))) %>%
+  kbl() %>%
+  kable_minimal()
+```
+
